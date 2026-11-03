@@ -236,11 +236,33 @@ bbrv3() {
     case $optimize_choice in
         y|Y)
             clear
+            sysctl_dropin="/etc/sysctl.d/99-bbr-optimizations.conf"
+            mkdir -p /etc/sysctl.d
+
             echo -e "${YELLOW}Backing up original kernel parameter configuration... ${NC}"
-            cp /etc/sysctl.conf /etc/sysctl.conf.bak
+            if [ -f /etc/sysctl.conf ]; then
+                cp /etc/sysctl.conf /etc/sysctl.conf.bak
+                # Drop-in files are loaded before /etc/sysctl.conf, so previously
+                # appended BBRv3 lines would override 99-bbr-optimizations.conf.
+                sed -i \
+                    -e '/^# BBRv3 Optimization for Better Network Performance$/d' \
+                    -e '/^net\.ipv4\.tcp_timestamps = 1$/d' \
+                    -e '/^net\.ipv4\.tcp_sack = 1$/d' \
+                    -e '/^net\.ipv4\.tcp_window_scaling = 1$/d' \
+                    -e '/^net\.core\.rmem_max = 16777216$/d' \
+                    -e '/^net\.core\.wmem_max = 16777216$/d' \
+                    -e '/^net\.ipv4\.tcp_rmem = 4096 87380 16777216$/d' \
+                    -e '/^net\.ipv4\.tcp_wmem = 4096 65536 16777216$/d' \
+                    -e '/^net\.ipv4\.tcp_congestion_control = bbr$/d' \
+                    /etc/sysctl.conf
+            fi
+            if [ -f "$sysctl_dropin" ]; then
+                cp "$sysctl_dropin" "${sysctl_dropin}.bak"
+            fi
+
             echo -e "${YELLOW}Optimizing kernel parameters for better network performance... ${NC}"
 
-            cat <<EOL >> /etc/sysctl.conf
+            cat <<EOL > "$sysctl_dropin"
 # BBRv3 Optimization for Better Network Performance
 net.ipv4.tcp_timestamps = 1
 net.ipv4.tcp_sack = 1
@@ -252,12 +274,18 @@ net.ipv4.tcp_wmem = 4096 65536 16777216
 net.ipv4.tcp_congestion_control = bbr
 EOL
 
-            sysctl -p
-            if [ $? -eq 0 ]; then
+            if sysctl -p "$sysctl_dropin"; then
                 echo -e "${GREEN}Kernel parameter optimization for better network performance was successful.${NC}"
             else
                 echo -e "${RED}Kernel parameter optimization failed. Restoring the original configuration...${NC}"
-                mv /etc/sysctl.conf.bak /etc/sysctl.conf
+                if [ -f "${sysctl_dropin}.bak" ]; then
+                    mv "${sysctl_dropin}.bak" "$sysctl_dropin"
+                else
+                    rm -f "$sysctl_dropin"
+                fi
+                if [ -f /etc/sysctl.conf.bak ]; then
+                    mv /etc/sysctl.conf.bak /etc/sysctl.conf
+                fi
             fi
             ;;
         n|N)
