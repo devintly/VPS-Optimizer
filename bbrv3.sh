@@ -262,7 +262,7 @@ bbrv3() {
 
             echo -e "${YELLOW}Optimizing kernel parameters for better network performance... ${NC}"
 
-            cat <<EOL > "$sysctl_dropin"
+            if cat <<EOL > "$sysctl_dropin"
 # BBRv3 Optimization for Better Network Performance
 net.ipv4.tcp_timestamps = 1
 net.ipv4.tcp_sack = 1
@@ -273,19 +273,23 @@ net.ipv4.tcp_rmem = 4096 87380 16777216
 net.ipv4.tcp_wmem = 4096 65536 16777216
 net.ipv4.tcp_congestion_control = bbr
 EOL
-
-            if sysctl -p "$sysctl_dropin"; then
-                echo -e "${GREEN}Kernel parameter optimization for better network performance was successful.${NC}"
+            then
+                echo -e "${GREEN}Created ${sysctl_dropin}.${NC}"
             else
-                echo -e "${RED}Kernel parameter optimization failed. Restoring the original configuration...${NC}"
+                echo -e "${RED}Failed to create ${sysctl_dropin}. Restoring the original configuration...${NC}"
                 if [ -f "${sysctl_dropin}.bak" ]; then
                     mv "${sysctl_dropin}.bak" "$sysctl_dropin"
-                else
-                    rm -f "$sysctl_dropin"
                 fi
                 if [ -f /etc/sysctl.conf.bak ]; then
                     mv /etc/sysctl.conf.bak /etc/sysctl.conf
                 fi
+                return
+            fi
+
+            if sysctl -p "$sysctl_dropin"; then
+                echo -e "${GREEN}Kernel parameter optimization for better network performance was successful.${NC}"
+            else
+                echo -e "${YELLOW}Settings are saved in ${sysctl_dropin}. Applying them in the current session failed; they stay on disk and load on the next boot.${NC}"
             fi
             ;;
         n|N)
