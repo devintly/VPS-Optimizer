@@ -143,15 +143,15 @@ install_xanmod() {
                 ;;
             2)
                 apt-get update
-                apt-get install linux-xanmod-lts-x64v2 -y
+                apt-get install linux-xanmod-x64v2 -y
                 ;;
             3)
                 apt-get update
-                apt-get install linux-xanmod-lts-x64v3 -y
+                apt-get install linux-xanmod-x64v3 -y
                 ;;
             4)
                 apt-get update
-                apt-get install linux-xanmod-lts-x64v3 -y
+                apt-get install linux-xanmod-x64v3 -y
                 ;;
             *)
                 echo -e "${RED}Your CPU is not supported by the XanMod kernel and cannot be installed.${NC}"
