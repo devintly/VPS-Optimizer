@@ -105,69 +105,127 @@ cpu_support_info=$(/usr/bin/awk -f <(wget -qO - https://raw.githubusercontent.co
     fi
 }
 
+XANMOD_GRUB_HELPER="/usr/local/bin/xanmod-set-grub-default"
+XANMOD_GRUB_HOOK="/etc/kernel/postinst.d/zz-xanmod-grub-default"
+
 # GRUB picks the newest kernel version for the default boot entry; a stock 7.x
 # image can stay ahead of XanMod 6.x unless GRUB_DEFAULT points at XanMod explicitly.
-set_xanmod_grub_default() {
-    local grub_cfg="/boot/grub/grub.cfg"
-    local krel submenu entry grub_default grub_default_escaped
+# After a XanMod package upgrade the menu title changes — GRUB_DEFAULT must be updated too.
+install_xanmod_grub_helper() {
+    mkdir -p /etc/kernel/postinst.d "$(dirname "$XANMOD_GRUB_HELPER")"
 
-    if [ ! -f "$grub_cfg" ]; then
-        echo -e "${RED}GRUB configuration not found at ${grub_cfg}.${NC}"
-        return 1
-    fi
+    cat <<'EOF' > "$XANMOD_GRUB_HELPER"
+#!/bin/bash
+set -e
 
-    krel=$(ls -1 /boot/vmlinuz-*xanmod* 2>/dev/null | sed 's|.*/vmlinuz-||' | sort -V | tail -1)
-    if [ -z "$krel" ]; then
-        echo -e "${RED}No XanMod kernel image found under /boot.${NC}"
-        return 1
-    fi
+grub_cfg="/boot/grub/grub.cfg"
+mode="${1:-refresh}"
 
-    read -r submenu entry < <(awk -v krel="$krel" '
-        /^submenu / {
-            submenu = ""
-            if (match($0, /'\''[^'\'']+'\''/)) {
-                submenu = substr($0, RSTART + 1, RLENGTH - 2)
-            }
+if [ ! -f "$grub_cfg" ]; then
+    echo "GRUB configuration not found at ${grub_cfg}." >&2
+    exit 1
+fi
+
+if [ "$mode" = "refresh" ]; then
+    update-grub
+fi
+
+krel=$(ls -1 /boot/vmlinuz-*xanmod* 2>/dev/null | sed 's|.*/vmlinuz-||' | sort -V | tail -1)
+if [ -z "$krel" ]; then
+    echo "No XanMod kernel image found under /boot." >&2
+    exit 1
+fi
+
+read -r submenu entry < <(awk -v krel="$krel" '
+    /^submenu / {
+        submenu = ""
+        if (match($0, /'\''[^'\'']+'\''/)) {
+            submenu = substr($0, RSTART + 1, RLENGTH - 2)
         }
-        /menuentry / && index($0, krel) && $0 !~ /recovery mode/ {
-            if (match($0, /'\''[^'\'']+'\''/)) {
-                entry = substr($0, RSTART + 1, RLENGTH - 2)
-                if (submenu != "") {
-                    print submenu, entry
-                } else {
-                    print "", entry
-                }
-                exit
+    }
+    /menuentry / && index($0, krel) && $0 !~ /recovery mode/ {
+        if (match($0, /'\''[^'\'']+'\''/)) {
+            entry = substr($0, RSTART + 1, RLENGTH - 2)
+            if (submenu != "") {
+                print submenu, entry
+            } else {
+                print "", entry
             }
+            exit
         }
-    ' "$grub_cfg")
+    }
+' "$grub_cfg")
 
-    if [ -z "$entry" ]; then
-        echo -e "${RED}Could not find a GRUB menu entry for kernel ${krel}.${NC}"
-        return 1
+if [ -z "$entry" ]; then
+    echo "Could not find a GRUB menu entry for kernel ${krel}." >&2
+    exit 1
+fi
+
+if [ -n "$submenu" ]; then
+    grub_default="${submenu}>${entry}"
+else
+    grub_default="$entry"
+fi
+
+if [ ! -f /etc/default/grub.bak.xanmod ]; then
+    cp /etc/default/grub /etc/default/grub.bak.xanmod
+fi
+
+grub_default_escaped=${grub_default//\\/\\\\}
+grub_default_escaped=${grub_default_escaped//|/\\|}
+
+if grep -q '^GRUB_DEFAULT=' /etc/default/grub; then
+    sed -i "s|^GRUB_DEFAULT=.*|GRUB_DEFAULT=\"${grub_default_escaped}\"|" /etc/default/grub
+else
+    echo "GRUB_DEFAULT=\"${grub_default_escaped}\"" >> /etc/default/grub
+fi
+
+if [ "$mode" = "refresh" ]; then
+    update-grub
+fi
+
+echo "GRUB default set to: ${grub_default} (kernel ${krel})"
+EOF
+    chmod 755 "$XANMOD_GRUB_HELPER"
+
+    cat <<EOF > "$XANMOD_GRUB_HOOK"
+#!/bin/sh
+set -e
+case "\$1" in
+    *-xanmod*)
+        if [ -x "$XANMOD_GRUB_HELPER" ]; then
+            "$XANMOD_GRUB_HELPER" refresh
+        fi
+        ;;
+esac
+exit 0
+EOF
+    chmod 755 "$XANMOD_GRUB_HOOK"
+}
+
+remove_xanmod_grub_helper() {
+    rm -f "$XANMOD_GRUB_HELPER" "$XANMOD_GRUB_HOOK"
+}
+
+refresh_xanmod_grub_boot() {
+    install_xanmod_grub_helper
+    if "$XANMOD_GRUB_HELPER" refresh; then
+        echo -e "${GREEN}GRUB updated; newest XanMod kernel is set as the default boot entry.${NC}"
+        return 0
     fi
+    echo -e "${RED}Failed to refresh GRUB for XanMod.${NC}"
+    return 1
+}
 
-    if [ -n "$submenu" ]; then
-        grub_default="${submenu}>${entry}"
-    else
-        grub_default="$entry"
-    fi
-
-    if [ ! -f /etc/default/grub.bak.xanmod ]; then
-        cp /etc/default/grub /etc/default/grub.bak.xanmod
-    fi
-
-    grub_default_escaped=${grub_default//\\/\\\\}
-    grub_default_escaped=${grub_default_escaped//|/\\|}
-
-    if grep -q '^GRUB_DEFAULT=' /etc/default/grub; then
-        sed -i "s|^GRUB_DEFAULT=.*|GRUB_DEFAULT=\"${grub_default_escaped}\"|" /etc/default/grub
-    else
-        echo "GRUB_DEFAULT=\"${grub_default_escaped}\"" >> /etc/default/grub
-    fi
-
-    echo -e "${GREEN}GRUB default set to: ${CYAN}${grub_default}${NC}"
-    return 0
+update_xanmod_grub_menu() {
+    clear
+    echo ""
+    echo -e "${YELLOW}Refresh GRUB after a XanMod kernel upgrade${NC}"
+    echo ""
+    echo -e "${CYAN}This runs update-grub and points GRUB_DEFAULT at the newest XanMod image in /boot.${NC}"
+    echo ""
+    refresh_xanmod_grub_boot
+    press_enter
 }
 
 install_xanmod() {
@@ -237,14 +295,8 @@ install_xanmod() {
 
         case $grub in
             [Yy]|"")
-                update-grub
-                if set_xanmod_grub_default; then
-                    update-grub
+                if ! refresh_xanmod_grub_boot; then
                     echo ""
-                    echo -e "${GREEN}GRUB updated; XanMod kernel is set as the default boot entry.${NC}"
-                else
-                    echo ""
-                    echo -e "${YELLOW}GRUB was updated, but the default entry could not be switched to XanMod automatically.${NC}"
                     echo -e "${YELLOW}Set GRUB_DEFAULT in /etc/default/grub to the XanMod menu item, then run update-grub.${NC}"
                 fi
                 ;;
@@ -278,6 +330,10 @@ uninstall_xanmod() {
             done
             apt-get update
             apt-get autoremove -y
+            remove_xanmod_grub_helper
+            if [ -f /etc/default/grub.bak.xanmod ]; then
+                cp /etc/default/grub.bak.xanmod /etc/default/grub
+            fi
             update-grub
 
             if [ $? -eq 0 ]; then
@@ -404,6 +460,7 @@ while true; do
     echo ""
     echo -e "${GREEN} 1) ${NC} Install XanMod kernel & BBRv3 & Grub boot conf. ${NC}"
     echo -e "${GREEN} 2) ${NC} Uninstall XanMod kernel and restore to default ${NC}"
+    echo -e "${GREEN} 3) ${NC} Update GRUB default after XanMod kernel upgrade ${NC}"
     echo ""
     echo -e "${GREEN} E) ${NC} Exit the menu${NC}"
     echo ""
@@ -420,6 +477,9 @@ while true; do
         2)
             uninstall_xanmod
             ask_reboot
+            ;;
+        3)
+            update_xanmod_grub_menu
             ;;
         E|e)
             echo "Exiting..."
