@@ -105,6 +105,71 @@ cpu_support_info=$(/usr/bin/awk -f <(wget -qO - https://raw.githubusercontent.co
     fi
 }
 
+# GRUB picks the newest kernel version for the default boot entry; a stock 7.x
+# image can stay ahead of XanMod 6.x unless GRUB_DEFAULT points at XanMod explicitly.
+set_xanmod_grub_default() {
+    local grub_cfg="/boot/grub/grub.cfg"
+    local krel submenu entry grub_default grub_default_escaped
+
+    if [ ! -f "$grub_cfg" ]; then
+        echo -e "${RED}GRUB configuration not found at ${grub_cfg}.${NC}"
+        return 1
+    fi
+
+    krel=$(ls -1 /boot/vmlinuz-*xanmod* 2>/dev/null | sed 's|.*/vmlinuz-||' | sort -V | tail -1)
+    if [ -z "$krel" ]; then
+        echo -e "${RED}No XanMod kernel image found under /boot.${NC}"
+        return 1
+    fi
+
+    read -r submenu entry < <(awk -v krel="$krel" '
+        /^submenu / {
+            submenu = ""
+            if (match($0, /'\''[^'\'']+'\''/)) {
+                submenu = substr($0, RSTART + 1, RLENGTH - 2)
+            }
+        }
+        /menuentry / && index($0, krel) && $0 !~ /recovery mode/ {
+            if (match($0, /'\''[^'\'']+'\''/)) {
+                entry = substr($0, RSTART + 1, RLENGTH - 2)
+                if (submenu != "") {
+                    print submenu, entry
+                } else {
+                    print "", entry
+                }
+                exit
+            }
+        }
+    ' "$grub_cfg")
+
+    if [ -z "$entry" ]; then
+        echo -e "${RED}Could not find a GRUB menu entry for kernel ${krel}.${NC}"
+        return 1
+    fi
+
+    if [ -n "$submenu" ]; then
+        grub_default="${submenu}>${entry}"
+    else
+        grub_default="$entry"
+    fi
+
+    if [ ! -f /etc/default/grub.bak.xanmod ]; then
+        cp /etc/default/grub /etc/default/grub.bak.xanmod
+    fi
+
+    grub_default_escaped=${grub_default//\\/\\\\}
+    grub_default_escaped=${grub_default_escaped//|/\\|}
+
+    if grep -q '^GRUB_DEFAULT=' /etc/default/grub; then
+        sed -i "s|^GRUB_DEFAULT=.*|GRUB_DEFAULT=\"${grub_default_escaped}\"|" /etc/default/grub
+    else
+        echo "GRUB_DEFAULT=\"${grub_default_escaped}\"" >> /etc/default/grub
+    fi
+
+    echo -e "${GREEN}GRUB default set to: ${CYAN}${grub_default}${NC}"
+    return 0
+}
+
 install_xanmod() {
     clear
     cpu_support_info=$(/usr/bin/awk -f <(wget -qO - https://raw.githubusercontent.com/opiran-club/VPS-Optimizer/main/checkcpu.sh))
@@ -171,10 +236,17 @@ install_xanmod() {
         read grub
 
         case $grub in
-            [Yy])
+            [Yy]|"")
                 update-grub
-                echo ""
-                echo -e "${GREEN}The GRUB boot configuration has been updated.${NC}"
+                if set_xanmod_grub_default; then
+                    update-grub
+                    echo ""
+                    echo -e "${GREEN}GRUB updated; XanMod kernel is set as the default boot entry.${NC}"
+                else
+                    echo ""
+                    echo -e "${YELLOW}GRUB was updated, but the default entry could not be switched to XanMod automatically.${NC}"
+                    echo -e "${YELLOW}Set GRUB_DEFAULT in /etc/default/grub to the XanMod menu item, then run update-grub.${NC}"
+                fi
                 ;;
             [Nn])
                 echo -e "${RED}It is not recommended, but the optimization has been aborted.${NC}"
